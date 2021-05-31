@@ -61,11 +61,22 @@ namespace xorm {
 		constexpr static bool value = true;
 	};
 
+	//template<typename T>
+	//typename std::enable_if<is_sqlitefundametion_type<typename std::remove_reference<T>::type>::value, bool>::type is_null_value_for_field(T&& t) {
+	//	return t.is_null();
+	//}
+
+	//template<typename T>
+	//typename std::enable_if<!is_sqlitefundametion_type<typename std::remove_reference<T>::type>::value, bool>::type is_null_value_for_field(T&& t) {
+	//	return t.empty();
+	//}
+
 	class sqlite final {
 	public:
 		using Integer = SqliteFundamentionType<int>;
 		using Double = SqliteFundamentionType<double>;
 		using Int64 = SqliteFundamentionType<sqlite3_int64>;
+		using Blob = std::vector<char>;
 		struct SQLITE_RES {
 			int argu1;
 			char** argu2;
@@ -142,6 +153,9 @@ namespace xorm {
 				 v = sqlite3_column_int(stmt, (int)index);
 				 return 0;
 			}
+			if (v.is_null()) {
+				return sqlite3_bind_null(stmt, (int)index);
+			}
 			return  sqlite3_bind_int(stmt, (int)index, v.value());
 		}
 
@@ -151,6 +165,9 @@ namespace xorm {
 				v = sqlite3_column_double(stmt, (int)index);
 				return 0;
 			}
+			if (v.is_null()) {
+				return sqlite3_bind_null(stmt, (int)index);
+			}
 			return  sqlite3_bind_double(stmt, (int)index, v.value());
 		}
 
@@ -159,6 +176,9 @@ namespace xorm {
 			if (get) {
 				v = sqlite3_column_int64(stmt, (int)index);
 				return 0;
+			}
+			if (v.is_null()) {
+				return sqlite3_bind_null(stmt, (int)index);
 			}
 			return sqlite3_bind_int64(stmt, (int)index, v.value());
 		}
@@ -171,6 +191,17 @@ namespace xorm {
 				return 0;
 			}
 			return sqlite3_bind_text(stmt, (int)index, v.data(),(int)v.size(),nullptr);
+		}
+
+		template<typename T>
+		typename std::enable_if<!is_sqlitefundametion_type<typename std::remove_reference<T>::type>::value&& std::is_same<typename std::remove_reference<T>::type, Blob>::value, int>::type bind_value(sqlite3_stmt* stmt, T&& v, std::size_t index, bool get = false) {
+			if (get) {
+				auto size = (std::size_t)sqlite3_column_bytes(stmt, (int)index);
+				auto start = (char*)sqlite3_column_blob(stmt, (int)index);
+				v = Blob(start, start + size);
+				return 0;
+			}
+			return sqlite3_bind_blob(stmt, (int)index, v.data(), (int)v.size(), nullptr);
 		}
 
 		template<typename...T>
@@ -206,7 +237,7 @@ namespace xorm {
 	private:
 		void trigger_error(std::string const& msg) {
 			if (error_callback_ != nullptr) {
-				error_callback_(msg);
+				error_callback_("db_index: " + db_index_key_ + " , error: " + msg);
 			}
 		}
 		void set_error_callback(std::function<void(std::string const&)> const& callback) {
@@ -236,6 +267,7 @@ namespace xorm {
 			disconnect();
 		}
 		bool connect(dataBaseConfig const& config) {
+			db_index_key_ = config.index_key;
 			auto r = sqlite3_open(config.host.c_str(), &sqlite_handler_);
 			if (r == SQLITE_OK) {  //表示连接成功
 #ifdef SQLITE_HAS_CODEC
@@ -380,7 +412,8 @@ namespace xorm {
 			stmt_guard<sqlite3_stmt> guard{ stmt };
 			db_result<void> dbresult;
 			if (r == SQLITE_OK) {
-				auto result = bind_params_without_obj(stmt, std::make_tuple(params...), xorm_utils::make_index_package<sizeof...(params)>{});
+				auto params_tuple = std::make_tuple(params...);
+				auto result = bind_params_without_obj(stmt, params_tuple, xorm_utils::make_index_package<sizeof...(params)>{});
 				if (result == SQLITE_OK) {
 					result = sqlite3_step(stmt);
 					if (result == SQLITE_DONE) {
@@ -434,7 +467,8 @@ namespace xorm {
 			stmt_guard<sqlite3_stmt> guard{ stmt };
 			db_result<T> dbresult;
 			if (r == SQLITE_OK) {
-				auto result = bind_params_without_obj(stmt, std::make_tuple(params...), xorm_utils::make_index_package<sizeof...(params)>{});
+				auto params_tuple = std::make_tuple(params...);
+				auto result = bind_params_without_obj(stmt, params_tuple, xorm_utils::make_index_package<sizeof...(params)>{});
 				if (result == SQLITE_OK) {
 					while (sqlite3_step(stmt)== SQLITE_ROW) {
 						T tmp{};
@@ -472,7 +506,8 @@ namespace xorm {
 			stmt_guard<sqlite3_stmt> guard{ stmt };
 			db_result<T> dbresult;
 			if (r == SQLITE_OK) {
-				auto result = bind_params_without_obj(stmt, std::make_tuple(params...), xorm_utils::make_index_package<sizeof...(params)>{});
+				auto params_tuple = std::make_tuple(params...);
+				auto result = bind_params_without_obj(stmt, params_tuple, xorm_utils::make_index_package<sizeof...(params)>{});
 				if (result == SQLITE_OK) {
 					while (sqlite3_step(stmt) == SQLITE_ROW) {
 						T tmp{};
@@ -501,10 +536,15 @@ namespace xorm {
 			}
 			return dbresult;
 		}
+	public:
+		sqlite3* get_raw_connetion() {
+			return is_connect_ == true ? sqlite_handler_ : nullptr;
+		}
 	private:
 		bool is_connect_ = false;
 		sqlite3* sqlite_handler_ = nullptr;
 		std::function<void(std::string const&)> error_callback_;
+		std::string db_index_key_;
 	};
 }
 #endif //  ENABLE_SQLITE
